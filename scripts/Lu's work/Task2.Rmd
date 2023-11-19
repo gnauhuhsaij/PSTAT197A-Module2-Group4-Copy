@@ -1,0 +1,377 @@
+---
+title: "Task2"
+author: "Lu Liu"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    toc_depth: 4
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+
+```{r setup, echo=FALSE}
+library(knitr)
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+
+options(digits = 4)
+
+# debug latex
+options(tinytex.verbose = TRUE)
+```
+
+
+## Packages
+
+```{r}
+require(tidyverse)
+require(tidytext)
+require(textstem)
+require(rvest)
+require(qdapRegex)
+require(stopwords)
+require(tokenizers)
+
+library(Matrix)
+library(sparsesvd)
+library(tidyr)
+library(glmnet)
+library(modelr)
+library(tidymodels)
+
+source('https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/scripts/package-installs.R')
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/activities/data/'
+source(paste(url, 'projection-functions.R', sep = ''))
+```
+
+
+## Functions
+
+#### function to parse html and clean text
+
+```{r}
+parse_fn <- function(.html){
+  read_html(.html) %>%
+    html_elements('p') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+```
+
+#### function to apply to claims data with bigrams
+
+```{r}
+parse_data <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+
+nlp_fn <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'ngrams',
+                  n = 2,
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+```
+
+
+## Data
+
+#### Data Loading
+```{r}
+setwd("C:/Users/luliu/OneDrive/Desktop/PSTAT197A/M2/module2-f23-module2-group4")
+load("data/claims-raw.Rdata")
+```
+
+
+#### Data Cleaning
+
+```{r}
+claims_clean <- claims_raw %>%
+  parse_data()
+
+claims <- claims_clean %>%
+  nlp_fn()
+```
+
+
+#### Splitting the data
+
+
+```{r}
+set.seed(102722)
+partitions <- claims %>% initial_split(prop = 0.8)
+
+test_dtm <- testing(partitions) %>%
+  select(-.id, -bclass)
+test_labels <- testing(partitions) %>%
+  select(.id, bclass)
+
+train_dtm <- training(partitions) %>%
+  select(-.id, -bclass)
+train_labels <- training(partitions) %>%
+  select(.id, bclass)
+```
+
+
+#### pca
+
+```{r}
+proj_out <- projection_fn(.dtm = train_dtm, .prop = 0.7)
+train_dtm_projected <- proj_out$data
+
+proj_out$n_pc
+```
+
+
+## First regression model
+
+
+#### Create dataframe
+
+```{r}
+train <- train_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(train_dtm_projected)
+
+x_train <- train %>% select(-bclass) %>% as.matrix()
+y_train <- train_labels %>% pull(bclass)
+```
+
+
+#### Fitting the model
+
+```{r}
+alpha_enet <- 0.3
+fit_reg <- glmnet(x = x_train, 
+                 y = y_train, 
+                 family = 'binomial',
+                 alpha = alpha_enet)
+
+
+set.seed(102722)
+cvout <- cv.glmnet(x = x_train, 
+                   y = y_train, 
+                   family = 'binomial',
+                   alpha = alpha_enet)
+
+lambda_opt <- cvout$lambda.min
+
+cvout
+```
+
+#### Testing
+
+```{r}
+test_dtm_projected <- reproject_fn(.dtm = test_dtm, proj_out)
+
+# coerce to matrix
+x_test <- as.matrix(test_dtm_projected)
+
+# compute predicted probabilities
+preds <- predict(fit_reg, 
+                 s = lambda_opt, 
+                 newx = x_test,
+                 type = 'response')
+
+
+pred_df <- test_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, 
+                              labels = levels(bclass)))
+
+# define classification metric panel 
+panel <- metric_set(sensitivity, 
+                    specificity, 
+                    accuracy, 
+                    roc_auc)
+
+# compute test set accuracy
+pred_df %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second')
+```
+
+
+## Second regression model
+
+#### Predict the log-odds for training data
+
+```{r}
+set.seed(102722)
+logodds_train <- predict(fit_reg, s = lambda_opt, newx = x_train, type = "link")
+
+train2 <- train
+train2$odds <- logodds_train
+```
+
+#### Select some number of pca
+
+```{r}
+set.seed(102722)
+all_columns <- seq_len(98)
+selected_columns <- sample(all_columns[2:97], size = 50)
+selected_columns <- c(selected_columns, 98)
+
+x_train2 <- train2[, selected_columns, drop = FALSE] %>% as.matrix()
+y_train2 <- train_labels %>% pull(bclass)
+```
+
+
+#### Predict the log-odds for testing data
+
+```{r}
+set.seed(102722)
+logodds_test <- predict(fit_reg, s = lambda_opt, newx = x_test, type = "link")
+
+test_dtm_projected2 <- test_dtm_projected
+test_dtm_projected2$odds <- logodds_test
+test_dtm_projected2 <- test_dtm_projected2[, selected_columns-1, drop = FALSE]
+
+new_xtest <- as.matrix(test_dtm_projected2)
+```
+
+
+#### Fitting the model
+
+```{r}
+set.seed(102722)
+alpha_enet <- 0.3
+fit_reg2 <- glmnet(x = x_train2, 
+                  y = y_train2, 
+                  family = 'binomial',
+                  alpha = alpha_enet)
+
+
+cvout2 <- cv.glmnet(x = x_train2, 
+                   y = y_train2, 
+                   family = 'binomial',
+                   alpha = alpha_enet)
+
+lambda_opt2 <- cvout2$lambda.min
+
+cvout2
+
+
+```
+
+#### Testing
+
+```{r}
+set.seed(102722)
+preds2 <- predict(fit_reg2, 
+                 s = lambda_opt, 
+                 newx = new_xtest,
+                 type = 'response')
+
+
+pred_df2 <- test_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds2)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, 
+                              labels = levels(bclass)))
+
+# define classification metric panel 
+panel2 <- metric_set(sensitivity, 
+                    specificity, 
+                    accuracy, 
+                    roc_auc)
+
+# compute test set accuracy
+pred_df2 %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second')
+
+```
+
+
+
+## Writeup notes
+
+1. Mentioned about changing unigram to bigrams.
+2. pca techniques chose 96 elements.
+
+3. Talk about result from first regression model:
+
+Call:  cv.glmnet(x = x_train, y = y_train, family = "binomial", alpha = alpha_enet) 
+
+Measure: Binomial Deviance 
+
+    Lambda Index Measure     SE Nonzero
+min 0.0605    16    1.30 0.0137      25
+1se 0.0728    14    1.31 0.0134      16
+
+4. Talk about result from first testing
+sensitivity	binary	0.98684		
+specificity	binary	0.04217		
+accuracy	binary	0.58883		
+roc_auc	binary	0.75017	
+
+5. Mentioned second regression model randomly chooses 50 pca elements along with the log odds
+
+6. Talk about result from second regression model
+
+Call:  cv.glmnet(x = x_train2, y = y_train2, family = "binomial", alpha = alpha_enet) 
+
+Measure: Binomial Deviance 
+
+    Lambda Index Measure     SE Nonzero
+min 0.0588    25    1.25 0.0151       5
+1se 0.0853    21    1.26 0.0135       1
+
+7. Talk about result from second regression model
+sensitivity	binary	0.6711		
+specificity	binary	0.7711		
+accuracy	binary	0.7132		
+roc_auc	binary	0.7502	
+
+8. The result from class
+
+sensitivity binary         0.621
+specificity binary         0.830
+accuracy    binary         0.721
+roc_auc     binary         0.796
+
+9. The bigram does not provide more information about the text, maybe there is too much noise. Adding the log-odds improve the accuracy, which makes it compatible to class result. 
+
+
+
+
