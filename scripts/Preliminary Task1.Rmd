@@ -1,0 +1,364 @@
+---
+title: "Preliminary Task1"
+author: "Yoobin Won"
+date: "2023-11-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Packages
+```{r}
+require(tidyverse)
+require(tidytext)
+require(textstem)
+require(rvest)
+require(qdapRegex)
+require(stopwords)
+require(tokenizers)
+library(keras)
+library(tensorflow)
+library(tidymodels)
+library(modelr)
+library(Matrix)
+library(sparsesvd)
+library(glmnet)
+
+source('https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/scripts/package-installs.R')
+
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/activities/data/'
+source(paste(url, 'projection-functions.R', sep = ''))
+```
+
+
+## Claims without headers
+
+#### Functions from prediction.R
+```{r, echo=FALSE}
+# function to parse html and clean text
+parse_fn <- function(.html){
+  read_html(.html) %>%
+    html_elements('p') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+
+# function to apply to claims data
+parse_data <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+
+nlp_fn <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'words',
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+```
+
+#### Data cleaning
+
+```{r}
+claims_clean <- claims_raw %>%
+  parse_data()
+
+claims <- claims_clean %>%
+  nlp_fn()
+```
+
+
+#### Splitting the data
+
+```{r}
+set.seed(102722)
+partitions <- claims %>% initial_split(prop = 0.8)
+
+test_dtm <- testing(partitions) %>%
+  select(-.id, -bclass)
+test_labels <- testing(partitions) %>%
+  select(.id, bclass)
+
+train_dtm <- training(partitions) %>%
+  select(-.id, -bclass)
+train_labels <- training(partitions) %>%
+  select(.id, bclass)
+
+proj_out <- projection_fn(.dtm = train_dtm, .prop = 0.7)
+train_dtm_projected <- proj_out$data
+
+# number of components used
+proj_out$n_pc
+```
+
+#### pca
+
+```{r}
+train <- train_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(train_dtm_projected)
+
+x_train <- train %>% select(-bclass) %>% as.matrix()
+y_train <- train_labels %>% pull(bclass)
+```
+
+
+## Logistic Regression
+
+#### Storing predictors and response
+
+```{r}
+fit_reg <- glmnet(x = x_train, 
+                 y = y_train, 
+                 family = 'binomial',
+                 alpha = alpha_enet)
+
+set.seed(102722)
+cvout <- cv.glmnet(x = x_train, 
+                   y = y_train, 
+                   family = 'binomial',
+                   alpha = alpha_enet)
+
+lambda_opt <- cvout$lambda.min
+
+cvout
+```
+
+#### Prediction
+
+```{r}
+# project test data onto PCs
+test_dtm_projected <- reproject_fn(.dtm = test_dtm, proj_out)
+
+# coerce to matrix
+x_test <- as.matrix(test_dtm_projected)
+
+# compute predicted probabilities
+preds <- predict(fit_reg, 
+                 s = lambda_opt, 
+                 newx = x_test,
+                 type = 'response')
+
+# store predictions in a data frame with true labels
+pred_df <- test_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, 
+                              labels = levels(bclass)))
+
+# define classification metric panel 
+panel <- metric_set(sensitivity, 
+                    specificity, 
+                    accuracy, 
+                    roc_auc)
+
+# compute test set accuracy
+pred_df %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second')
+```
+
+#=============================================================
+#### function to parse html and clean text including headers
+
+```{r}
+parse_fn_1 <- function(.html){
+  read_html(.html) %>%
+    html_elements('p, h1, h2, h3, h4, h5, h6') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+```
+
+#### function to apply to claims data
+
+```{r}
+parse_data_1 <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn_1(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+
+nlp_fn_1 <- function(parse_data_1.out){
+  out <- parse_data_1.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean,  # Use the parsed paragraphs + headers
+                  token = 'words',
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+```
+
+#### Data cleaning
+
+```{r}
+load('data/claims-raw.RData')
+
+claims_clean_1 <- claims_raw %>%
+  parse_data_1()
+
+claims_df <- claims_clean_1 %>%
+  nlp_fn_1()
+```
+
+#### Splitting the data
+
+```{r}
+set.seed(102722)
+partitions_1 <- claims_df %>% initial_split(prop = 0.8)
+
+test_dtm_1 <- testing(partitions_1) %>%
+  select(-.id, -bclass)
+test_labels_1 <- testing(partitions_1) %>%
+  select(.id, bclass)
+
+train_dtm_1 <- training(partitions_1) %>%
+  select(-.id, -bclass)
+train_labels_1 <- training(partitions_1) %>%
+  select(.id, bclass)
+```
+
+#### pca
+
+```{r}
+proj_out_1 <- projection_fn(.dtm = train_dtm_1, .prop = 0.7)
+train_dtm_projected_1 <- proj_out_1$data
+
+# number of components used
+proj_out_1$n_pc
+```
+
+## Logistic Regression w headers
+
+#### Storing predictors and response
+
+```{r}
+train_1 <- train_labels_1 %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(train_dtm_projected_1)
+
+x_train_1 <- train_1 %>% select(-bclass) %>% as.matrix()
+y_train_1 <- train_labels_1 %>% pull(bclass)
+```
+
+
+#### Fitting the model
+
+```{r}
+alpha_enet <- 0.3
+fit_reg_hdrs <- glmnet(x = x_train_1, 
+                 y = y_train_1, 
+                 family = 'binomial',
+                 alpha = alpha_enet)
+
+
+set.seed(102722)
+cvout_1 <- cv.glmnet(x = x_train_1, 
+                   y = y_train_1, 
+                   family = 'binomial',
+                   alpha = alpha_enet)
+
+lambda_opt_1 <- cvout_1$lambda.min
+
+cvout_1
+```
+
+
+#### Prediction
+
+```{r}
+# project test data onto PCs
+test_dtm_projected_1 <- reproject_fn(.dtm = test_dtm_1, proj_out_1)
+
+# coerce to matrix
+x_test_1 <- as.matrix(test_dtm_projected_1)
+
+# compute predicted probabilities
+preds_hdrs <- predict(fit_reg_hdrs, 
+                 s = lambda_opt_1, 
+                 newx = x_test_1,
+                 type = 'response')
+
+# store predictions in a data frame with true labels
+pred_df_hdrs <- test_labels_1 %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds_hdrs)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, 
+                              labels = levels(bclass)))
+
+# define classification metric panel 
+panel <- metric_set(sensitivity, 
+                    specificity, 
+                    accuracy, 
+                    roc_auc)
+
+# compute test set accuracy
+pred_df_hdrs %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second')
+```
+
+
+
+
+
+
