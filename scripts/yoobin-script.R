@@ -16,10 +16,8 @@ require(tokenizers)
 
 # function to parse html and clean text
 parse_fn_1 <- function(.html){
-  doc <- read_html(.html)
-  
-  paragraphs <- doc %>%
-    html_elements('p') %>%
+  read_html(.html) %>%
+    html_elements('p, h1, h2, h3, h4, h5, h6') %>%
     html_text2() %>%
     str_c(collapse = ' ') %>%
     rm_url() %>%
@@ -34,25 +32,6 @@ parse_fn_1 <- function(.html){
     str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
     tolower() %>%
     str_replace_all("\\s+", " ")
-  
-  headers <- doc %>%
-    html_elements(c('h1', 'h2', 'h3', 'h4', 'h5', 'h6')) %>%
-    html_text2() %>%
-    str_c(collapse = ' ') %>%
-    rm_url() %>%
-    rm_email() %>%
-    str_remove_all('\'') %>%
-    str_replace_all(paste(c('\n', 
-                            '[[:punct:]]', 
-                            'nbsp', 
-                            '[[:digit:]]', 
-                            '[[:symbol:]]'),
-                          collapse = '|'), ' ') %>%
-    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
-    tolower() %>%
-    str_replace_all("\\s+", " ")
-  
-  return(list(paragraphs = paragraphs, headers = headers))
 }
 
 # function to apply to claims data
@@ -60,15 +39,15 @@ parse_data_1 <- function(.df){
   out <- .df %>%
     filter(str_detect(text_tmp, '<!')) %>%
     rowwise() %>%
-    mutate(text_clean = list(parse_fn_1(text_tmp))) %>%
-    unnest_wider(text_clean) 
+    mutate(text_clean = parse_fn_1(text_tmp)) %>%
+    unnest(text_clean) 
   return(out)
 }
 
 nlp_fn_1 <- function(parse_data_1.out){
   out <- parse_data_1.out %>% 
     unnest_tokens(output = token, 
-                  input = paragraphs,  # Use the parsed paragraphs
+                  input = text_clean,  # Use the parsed paragraphs
                   token = 'words',
                   stopwords = str_remove_all(stop_words$word, 
                                              '[[:punct:]]')) %>%
@@ -85,15 +64,36 @@ nlp_fn_1 <- function(parse_data_1.out){
   return(out)
 }
 
-## nlp-model-development:=========================================
-## PREPROCESSING
-
 # load raw data
 load('data/claims-raw.RData')
 
 # preprocess (will take a minute or two)
-claims_clean_1 <- claims_raw %>%
-  parse_data_1()
+claims_clean_1 <- parse_data_1(claims_raw)
+
+# tokenization
+claims_tokens <- claims_clean_1 %>%
+  unnest_tokens(output = token, 
+                input = text_clean, 
+                token = 'words',
+                stopwords = str_remove_all(stop_words$word, '[[:punct:]]'))
+
+# View the resulting data frame
+head(claims_tokens)
+# frequency measures
+claims_tfidf <- claims_tokens %>%
+  count(.id, token) %>%
+  bind_tf_idf(term = token,
+              document = .id,
+              n = n) 
+
+claims_df <- claims_tfidf %>%
+  left_join(claims_clean_1 %>%
+              select(.id, bclass, mclass),
+            by = c(".id" = ".id")) %>%
+  pivot_wider(id_cols = c(.id, bclass, mclass), 
+              names_from = token,
+              values_from = tf_idf,
+              values_fill = 0)
 
 # export
 save(claims_clean_1, file = 'data/claims-clean-example_1.RData')
@@ -105,65 +105,64 @@ library(tidymodels)
 library(keras)
 library(tensorflow)
 
+# logistic regression: ==================================================
+source('https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/scripts/package-installs.R')
+
+# packages
+library(tidyverse)
+library(tidymodels)
+library(modelr)
+library(Matrix)
+library(sparsesvd)
+library(glmnet)
+
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/activities/data/'
+
+# load a few functions for the activity
+source(paste(url, 'projection-functions.R', sep = ''))
+
 # load cleaned data
 load('data/claims-clean-example_1.RData')
 
 # partition
 set.seed(110122)
-partitions_1 <- claims_clean_1 %>%
+partitions_1 <- claims_df %>%
   initial_split(prop = 0.8)
 
-# train_text_1 <- training(partitions_1) %>%
-#   pull(paragraphs,headers)
+# separate DTM from labels
+# test_dtm <- testing(partitions_1) %>%
+#   select(-.id, -bclass, -mclass)
+# test_labels <- testing(partitions_1) %>%
+#   select(.id, bclass, mclass)
+
+# same, training set
+train_dtm_1 <- training(partitions_1) %>%
+  select(-.id, -bclass, -mclass)
 train_labels_1 <- training(partitions_1) %>%
-  pull(bclass) %>%
-  as.numeric() - 1
+  select(.id, bclass, mclass)
 
-# training split - concatenate paragraphs and headers into a list
-train_text_1 <- training(partitions_1) %>%
-  rowwise() %>%
-  mutate(
-    combined_text = str_c(paragraphs, headers, collapse = ' ')
-  ) %>%
-  select(combined_text) %>%
-  pull()
+####
+train_dtm_1 <- train_dtm_1 %>%
+  tibble(text = .) %>%
+  unnest_tokens(word, text) %>%
+  count(.id, word) %>%
+  cast_dtm(document = .id, term = word, value = n)
 
-# create a preprocessing layer
-preprocess_layer <- layer_text_vectorization(
-  standardize = NULL,
-  split = 'whitespace',
-  ngrams = NULL,
-  max_tokens = NULL,
-  output_mode = 'tf_idf'
-)
-preprocess_layer %>% adapt(train_text_1)
+proj_out <- projection_fn(.dtm = train_dtm_1, .prop = 0.7)
+train_dtm_projected <- proj_out$data
+####
 
-# define NN architecture
-model_1 <- keras_model_sequential() %>%
-  preprocess_layer() %>%
-  layer_dropout(0.2) %>%
-  layer_dense(units = 25) %>%
-  layer_dropout(0.2) %>%
-  layer_dense(1) %>%
-  layer_activation(activation = 'sigmoid')
+# find projections based on training data
+proj_out <- projection_fn(.dtm = train_dtm_1, .prop = 0.7)
+train_dtm_projected <- proj_out$data
 
-summary(model_1)
+# how many components were used?
+proj_out$n_pc
 
-# configure for training
-model_1 %>% compile(
-  loss = 'binary_crossentropy',
-  optimizer = 'adam',
-  metrics = 'binary_accuracy'
-)
+train <- train_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(train_dtm_projected)
 
-# train
-history <- model_1 %>%
-  fit(train_text_1, 
-      train_labels_1,
-      validation_split = 0.3,
-      epochs = 5)
+fit <- glm(bclass~., data = train, family="binomial")
 
-## CHECK TEST SET ACCURACY HERE
 
-# save the entire model as a SavedModel
-save_model_tf(model_1, "results/model_1")
