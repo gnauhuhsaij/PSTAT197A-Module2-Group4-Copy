@@ -1,0 +1,188 @@
+---
+title: "Task3"
+author: "Lu Liu"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    toc_depth: 4
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+
+```{r setup, echo=FALSE}
+library(knitr)
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+
+options(digits = 4)
+
+# debug latex
+options(tinytex.verbose = TRUE)
+```
+
+
+```{r}
+setwd("C:/Users/luliu/OneDrive/Desktop/PSTAT197A/M2/module2-f23-module2-group4")
+source('scripts/preprocessing.R')
+```
+
+## Loading packages
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(keras)
+library(tensorflow)
+
+```
+
+
+## Loading and splitting the data. 
+
+```{r}
+load('data/claims-clean-example.RData')
+```
+
+
+```{r}
+set.seed(110122)
+partitions <- claims_clean %>%
+  initial_split(prop = 0.8)
+
+train_text <- training(partitions) %>%
+  pull(text_clean)
+train_labels <- training(partitions) %>%
+  pull(bclass) %>%
+  as.numeric() - 1
+```
+
+
+## Example model
+
+```{r}
+preprocess_layer <- layer_text_vectorization(
+  standardize = NULL,
+  split = 'whitespace',
+  ngrams = NULL,
+  max_tokens = NULL,
+  output_mode = 'tf_idf'
+)
+
+preprocess_layer %>% adapt(train_text)
+
+# define NN architecture
+model <- keras_model_sequential() %>%
+  preprocess_layer() %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25) %>%
+  layer_dropout(0.2) %>%
+  layer_dense(1) %>%
+  layer_activation(activation = 'sigmoid')
+
+summary(model)
+
+# configure for training
+model %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer = 'adam',
+  metrics = 'binary_accuracy'
+)
+
+# train
+history <- model %>%
+  fit(train_text, 
+      train_labels,
+      validation_split = 0.3,
+      epochs = 5)
+```
+
+```{r}
+test_text <- testing(partitions) %>%
+  pull(text_clean)
+test_labels <- testing(partitions) %>%
+  pull(bclass) %>%
+  as.numeric() - 1
+
+
+model %>% evaluate(test_text, test_labels)
+```
+
+## Modified model
+
+```{r}
+preprocess_layer <- layer_text_vectorization(
+  standardize = NULL,
+  split = 'whitespace',
+  ngrams = NULL,
+  max_tokens = NULL,
+  output_mode = 'tf_idf'
+)
+
+preprocess_layer %>% adapt(train_text)
+
+# define NN architecture
+model2 <- keras_model_sequential() %>%
+  preprocess_layer() %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25) %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(1) %>%
+  layer_activation(activation = 'sigmoid')
+
+summary(model2)
+
+# configure for training
+model2 %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer = 'adam',
+  metrics = 'binary_accuracy'
+)
+
+# train
+history <- model2 %>%
+  fit(train_text, 
+      train_labels,
+      validation_split = 0.3,
+      epochs = 10)
+```
+
+```{r}
+test_text <- testing(partitions) %>%
+  pull(text_clean)
+test_labels <- testing(partitions) %>%
+  pull(bclass) %>%
+  as.numeric() - 1
+
+
+model %>% evaluate(test_text, test_labels)
+```
+
+
+```{r}
+save_model_tf(model2, "modified-model")
+```
+
+
+## Write up notes
+1. Describe the structure of the neural net model in the example model
+2. For the example neural net: the loss decrease from 1.1632 to 0.2790 with 5 epoches, and the testing accuracy is  0.785. 
+
+3. describe the structure of the modified neural net model
+4. For our exploration, we added two more hidden layers with 25 neurons and dropout score of 0.2. We also increases to 10 epochs. 10 epochs is good, when increases the epochs to 15, the loss failed to converge. We can see that the loss decreases with 10 epochs. The loss decreaes from 0.7999 to 0.1902, binary_accuracy increases from 0.5726  to 0.9274. The testing accuracy is 0.8154, which is better than the accuracy of task 1 in preliminary tasks. 
+
+5. Consider maybe adding the graphs showing the patterns of accuracy and loss
+
+6. quick notes for the writer: the result turned out to be a bit different, so if you are going to re-run the code, dont forget to change the accuracy in your writing. 
+
+
+
+
