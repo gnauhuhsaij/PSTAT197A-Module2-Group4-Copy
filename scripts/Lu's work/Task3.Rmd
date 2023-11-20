@@ -45,7 +45,48 @@ library(tensorflow)
 ## Loading and splitting the data. 
 
 ```{r}
-load('data/claims-clean-example.RData')
+setwd("C:/Users/luliu/OneDrive/Desktop/PSTAT197A/M2/module2-f23-module2-group4")
+load("data/claims-raw.Rdata")
+```
+
+```{r}
+parse_fn_1 <- function(.html){
+  read_html(.html) %>%
+    html_elements('p, h1, h2, h3, h4, h5, h6') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+```
+
+#### function to apply to claims data
+
+```{r}
+parse_data_1 <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn_1(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+```
+
+
+
+```{r}
+claims_clean <- parse_data_1(claims_raw)
 ```
 
 
@@ -152,7 +193,7 @@ history <- model2 %>%
   fit(train_text, 
       train_labels,
       validation_split = 0.3,
-      epochs = 10)
+      epochs = 15)
 ```
 
 ```{r}
@@ -163,7 +204,7 @@ test_labels <- testing(partitions) %>%
   as.numeric() - 1
 
 
-model %>% evaluate(test_text, test_labels)
+model2 %>% evaluate(test_text, test_labels)
 ```
 
 
@@ -173,15 +214,16 @@ save_model_tf(model2, "modified-model")
 
 
 ## Write up notes
+The data is with header (the same as task 1)
 1. Describe the structure of the neural net model in the example model
-2. For the example neural net: the loss decrease from 1.1632 to 0.2790 with 5 epoches, and the testing accuracy is  0.785. 
+2. For the example neural net: the loss decrease from 1.2608 to 0.2956 with 5 epoches, the binary_accuracy increases from 0.7062 to 0.9624.  The testing accuracy is  0.7664.  
 
 3. describe the structure of the modified neural net model
-4. For our exploration, we added two more hidden layers with 25 neurons and dropout score of 0.2. We also increases to 10 epochs. 10 epochs is good, when increases the epochs to 15, the loss failed to converge. We can see that the loss decreases with 10 epochs. The loss decreaes from 0.7999 to 0.1902, binary_accuracy increases from 0.5726  to 0.9274. The testing accuracy is 0.8154, which is better than the accuracy of task 1 in preliminary tasks. 
+4. For our exploration, we added two more hidden layers with 25 neurons and dropout score of 0.2. We also increases to 15 epochs. 15 epochs is good, when increases the epochs to a larger number, the loss failed to converge. We can see that the loss decreases with 15 epochs. The loss decreaes from 0.8567 to 0.0968, binary_accuracy increases from 0.6344  to 0.9708. The testing accuracy is 0.8154, which is better than the accuracy of task 1 in preliminary tasks. 
 
-5. Consider maybe adding the graphs showing the patterns of accuracy and loss
+5. Consider maybe adding the graphs showing the patterns of accuracy and loss (not necessary)
 
-6. quick notes for the writer: the result turned out to be a bit different, so if you are going to re-run the code, dont forget to change the accuracy in your writing. 
+6. quick notes for the writer: the result turned out to be a bit different, so if you are going to re-run the code, dont forget to change the accuracy in your writing. If not, just use the accuracy I provided above. 
 
 
 

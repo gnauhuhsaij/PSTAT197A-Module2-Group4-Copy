@@ -357,18 +357,18 @@ Measure: Binomial Deviance
 min 0.0588    25    1.25 0.0151       5
 1se 0.0853    21    1.26 0.0135       1
 
-7. Talk about result from second regression model
+7. Talk about result from second regression model (better than the first model, one without log-odds)
 sensitivity	binary	0.6711		
 specificity	binary	0.7711		
 accuracy	binary	0.7132		
 roc_auc	binary	0.7502	
 
-8. The result from class
+8. The result with unigram and without header (please compare the accuracy to our first model)
 
-sensitivity binary         0.621
-specificity binary         0.830
-accuracy    binary         0.721
-roc_auc     binary         0.796
+sensitivity	binary	0.8514		
+specificity	binary	0.7399		
+accuracy	binary	0.8025		
+roc_auc	binary	0.8563
 
 9. The bigram does not provide more information about the text, maybe there is too much noise. Adding the log-odds improve the accuracy, which makes it compatible to class result. 
 
