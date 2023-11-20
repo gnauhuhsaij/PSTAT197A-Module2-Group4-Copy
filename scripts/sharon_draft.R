@@ -7,8 +7,7 @@ require(stopwords)
 require(tokenizers)
 
 set.seed(313)
-setwd("/Users/seoeun/UCSB/PSTAT197/module2-f23-module2-group-4")
-load("claims-clean-example.RData")
+setwd("/Users/seoeun/UCSB/PSTAT197/module2-f23-module2-group4")
 
 head(claims_clean)
 
@@ -113,4 +112,4 @@ pred_df <- pred_df %>%
   bind_cols(mclass.pred = pred_classes_m)
 pred_df
 
-save(pred_df, file = 'results/example-preds.RData')
+save(pred_df, file = 'results/predictions_df.RData')
