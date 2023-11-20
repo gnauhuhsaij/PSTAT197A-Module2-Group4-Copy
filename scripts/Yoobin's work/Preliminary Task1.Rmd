@@ -122,7 +122,7 @@ train_dtm_projected <- proj_out$data
 proj_out$n_pc
 ```
 
-#### pca
+#### Projection
 
 ```{r}
 train <- train_labels %>%
@@ -276,7 +276,7 @@ train_labels_1 <- training(partitions_1) %>%
   select(.id, bclass)
 ```
 
-#### pca
+#### Projection
 
 ```{r}
 proj_out_1 <- projection_fn(.dtm = train_dtm_1, .prop = 0.7)
@@ -358,7 +358,57 @@ pred_df_hdrs %>% panel(truth = bclass,
 ```
 
 
+## Write up notes
+
+1. Augment the HTML scraping strategy so that header information is captured in addition to paragraph content. 
+
+- Modifying the function that parses the data to include header information with the paragraphs (concatenate headers into text_clean column)
+
+2. Are binary class predictions improved using logistic principal component regression?
+
+**Results from analysis of only paragraphs (without headers):**
+Components: 153
+-------------------
+Call:  cv.glmnet(x = x_train, y = y_train, family = "binomial", alpha = alpha_enet) 
+
+Measure: Binomial Deviance 
+
+Lambda        Index Measure     SE        Nonzero
+min 0.0171    32    1.07        0.0308     113
+1se 0.0360    24    1.10        0.0191      95
+--------------------
+
+sensitivity	  binary	0.8514		
+specificity	  binary	0.7399		
+accuracy	    binary	0.8025		
+roc_auc	      binary	0.8563
+
+**Results from analysis with headers:**
+Components: 211
+---------------------
+Call:  cv.glmnet(x = x_train_1, y = y_train_1, family = "binomial", alpha = alpha_enet) 
+Measure: Binomial Deviance 
+
+Lambda        Index Measure     SE        Nonzero
+min 0.0164    32    1.13        0.0401     145
+1se 0.0314    25    1.16        0.0348     124
+---------------------
+
+sensitivity	  binary	0.8089		
+specificity	  binary	0.7692		
+accuracy	    binary	0.7905		
+roc_auc	      binary	0.8764
 
 
+It appears that including header information did not improve accuracy measures. 
+Manually looking at a few entries of the header information some of it is not relevant to the content on the paragraph ie. features or functions on the website were taken as headers suhc as filter or search tools.
 
+Example 1: (header is italicized)
+_find the truth filter by location filter by arrest date search public records powered by personal info check clayton thomas arrest details clayton thomas arrest details arrest information_ name clayton thomas location memphis tennessee age years processing date booking charge an arrest does not mean that the individual has been convicted of the alleged violation individuals on this website are innocent until proven guilty by a court of law all information related to charges and arrest or booking is obtained through public domain and in accordance with the freedom of information act....
 
+- While not all of the header information is relevant to the paragraph contents some of it is still related.
+
+Example 2:
+_family login_ national obituary search wayne slim straseske obituary click on the item you would like to print obituary guestbook all share this obituary resources arrangements made by koepsell murray funeral cremation services beaver dam n n crystal lake road beaver dam wi...
+
+- The header doesn't really seem to provide meaningful information to the contents of the paragraph. 
