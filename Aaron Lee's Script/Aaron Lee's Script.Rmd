@@ -87,6 +87,10 @@ binary_model <- keras_model_sequential() %>%
   layer_dropout(0.2) %>%
   layer_dense(units = 25) %>%
   layer_dropout(0.2) %>%
+  layer_dense(units = 25, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
   layer_dense(1) %>%
   layer_activation(activation = 'sigmoid')
 
@@ -104,19 +108,27 @@ history_binary <- binary_model %>%
   fit(train_text, 
       train_labels,
       validation_split = 0.3,
-      epochs = 5)
+      epochs = 10)
 
 # Save binary model
 save_model_tf(binary_model, "results/binary_model")
 
-# Predictions for binary model
-preds_binary <- predict(binary_model, clean_df$text_clean) %>%
+# Prediction on testing
+test_text <- testing(partitions) %>%
+  pull(text_clean)
+
+preds_binary <- predict(binary_model, test_text) %>%
   as.numeric()
+
+# Predictions for binary model
+# preds_binary1 <- predict(binary_model, clean_df$text_clean) %>%
+#    as.numeric()
 
 # Convert to binary labels
 class_labels_binary <- claims_raw %>% pull(bclass) %>% levels()
 pred_classes_binary <- factor(preds_binary > 0.5, labels = class_labels_binary)
 
+# pred_classes_binary
 ```
 
 ## Multi-Class Classification Model
@@ -128,7 +140,12 @@ multi_model <- keras_model_sequential() %>%
   layer_dropout(0.2) %>%
   layer_dense(units = 25) %>%
   layer_dropout(0.2) %>%
-  layer_dense(length(class_labels_binary), activation = 'softmax')
+  layer_dense(units = 25, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(5) %>%
+  layer_activation(activation = 'softmax')
 
 summary(multi_model)
 
@@ -141,7 +158,7 @@ multi_model %>% compile(
 
 # Convert multi-class labels to numeric
 train_labels_multi <- training(partitions) %>%
-  pull(bclass) %>%
+  pull(mclass) %>%
   as.factor() %>%
   as.numeric() - 1
 
@@ -150,15 +167,35 @@ history_multi <- multi_model %>%
   fit(train_text, 
       train_labels_multi,
       validation_split = 0.3,
-      epochs = 5)
+      epochs = 10)
 
 # Save multi-class model
 save_model_tf(multi_model, "results/multi_model")
 
+# Prediction on testing
+# test_text <- testing(partitions) %>%
+#   pull(text_clean)
+
+preds_multi <- predict(multi_model, test_text)
+
 # Predictions for multi-class model
-preds_multi <- predict(multi_model, clean_df$text_clean)
-class_labels_multi <- claims_raw %>% pull(bclass) %>% levels()
-pred_classes_multi <- factor(apply(preds_multi, 1, which.max), labels = class_labels_multi)
+# preds_multi <- predict(multi_model, clean_df$text_clean)
+class_labels_multi <- claims_raw %>% pull(mclass) %>% levels()
+pred_classes_multi <- factor(max.col(preds_multi), labels = class_labels_multi)
+
+# pred_classes_multi
+```
+
+
+```{r}
+# Tokenize and pad sequences for RNN
+```
+
+```{r}
+# Define RNN architecture for binary classification
+
+
+# Train the binary RNN model
 ```
 
 
@@ -166,16 +203,20 @@ pred_classes_multi <- factor(apply(preds_multi, 1, which.max), labels = class_la
 
 ```{r}
 # Create and save binary predictions
-pred_df_binary <- clean_df %>%
+pred_df_binary <- testing(partitions) %>%
   bind_cols(bclass.pred = pred_classes_binary) %>%
   select(.id, bclass.pred)
+
+# pred_df_binary
 
 save(pred_df_binary, file = 'results/binary_preds.RData')
 
 # Create and save multi-class predictions
-pred_df_multi <- clean_df %>%
-  bind_cols(mclass.pred = pred_classes_multi) %>%
-  select(.id, mclass.pred)
+pred_df_multi <- testing(partitions) %>%
+   bind_cols(mclass.pred = pred_classes_multi) %>%
+   select(.id, mclass.pred)
+
+# pred_df_multi
 
 save(pred_df_multi, file = 'results/multi_preds.RData')
 
