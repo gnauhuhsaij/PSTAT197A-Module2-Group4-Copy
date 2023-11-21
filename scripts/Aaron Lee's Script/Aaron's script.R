@@ -100,13 +100,16 @@ preds_binary <- predict(binary_model, test_text) %>%
   as.numeric()
 
 # Predictions for binary model
-# preds_binary1 <- predict(binary_model, clean_df$text_clean) %>%
-#    as.numeric()
+preds_binary1 <- predict(binary_model, clean_df$text_clean) %>%
+  as.numeric()
 
 # Convert to binary labels
 class_labels_binary <- claims_raw %>% pull(bclass) %>% levels()
 pred_classes_binary <- factor(preds_binary > 0.5, labels = class_labels_binary)
 # pred_classes_binary
+
+pred_classes_binary1 <- factor(preds_binary1 > 0.5, labels = class_labels_binary)
+# pred_classes_binary1
 
 
 ## Multi-Class Classification Model
@@ -156,10 +159,14 @@ save_model_tf(multi_model, "results/multi_model")
 preds_multi <- predict(multi_model, test_text)
 
 # Predictions for multi-class model
-# preds_multi <- predict(multi_model, clean_df$text_clean)
+preds_multi1 <- predict(multi_model, clean_df$text_clean)
+
 class_labels_multi <- claims_raw %>% pull(mclass) %>% levels()
 pred_classes_multi <- factor(max.col(preds_multi), labels = class_labels_multi)
 # pred_classes_multi
+
+pred_classes_multi1 <- factor(max.col(preds_multi1), labels = class_labels_multi)
+# pred_classes_multi1
 
 
 ## Export Predictions
@@ -173,6 +180,16 @@ pred_df_binary <- testing(partitions) %>%
 
 save(pred_df_binary, file = 'results/binary_preds.RData')
 
+# Create and save binary predictions (for clean_test)
+pred_df_binary1 <- clean_df %>%
+  bind_cols(bclass.pred = pred_classes_binary1) %>%
+  select(.id, bclass.pred)
+
+# pred_df_binary1
+
+save(pred_df_binary1, file = 'results/binary_preds1.RData')
+
+
 # Create and save multi-class predictions
 pred_df_multi <- testing(partitions) %>%
   bind_cols(mclass.pred = pred_classes_multi) %>%
@@ -181,4 +198,19 @@ pred_df_multi <- testing(partitions) %>%
 # pred_df_multi
 
 save(pred_df_multi, file = 'results/multi_preds.RData')
+
+pred_df_multi1 <- clean_df %>%
+  bind_cols(mclass.pred = pred_classes_multi1) %>%
+  select(.id, mclass.pred)
+
+# pred_df_multi1
+
+save(pred_df_multi1, file = 'results/multi_preds1.RData')
+
+
+merged_pred1 <- left_join(pred_df_binary1, pred_df_multi1, by = ".id")
+
+merged_pred1 # Use this!!! because this is the prediction of `claims-test.RData`
+
+save(merged_pred1, file = 'results/merged_pred.RData')
 
