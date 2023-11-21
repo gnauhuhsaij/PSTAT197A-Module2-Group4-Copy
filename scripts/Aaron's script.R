@@ -182,3 +182,11 @@ pred_df_multi <- testing(partitions) %>%
 
 save(pred_df_multi, file = 'results/multi_preds.RData')
 
+# merge the 2 dataframe
+
+merged_pred <- left_join(pred_df_binary, pred_df_multi, by = ".id")
+
+merged_pred
+
+save(merged_pred, file = 'results/merged_pred.RData')
+
