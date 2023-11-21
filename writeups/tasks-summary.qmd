@@ -1,25 +1,850 @@
 ---
 title: "Summary of exploratory tasks"
-author: 'YOUR NAMES HERE'
+author: 'Jiashu Huang, Yoobin Won, Irena Wong, Aaron Lee, Lu Liu, Sharon Lee'
 date: today
 ---
 
-### HTML scraping
+```{r, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
 
-Does including header content improve predictions? Answer the question and provide quantitative evidence supporting your answer.
+library(tidytext)
+require(textstem)
+require(rvest)
+require(qdapRegex)
+require(stopwords)
+require(tokenizers)
+library(keras)
+library(tensorflow)
+library(tidymodels)
+library(tidyverse)
+library(modelr)
+library(Matrix)
+library(sparsesvd)
+library(glmnet)
 
-### Bigrams
+source('https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/scripts/package-installs.R')
 
-Do bigrams capture additional information relevant to the classification of interest? Answer the question, **briefly** describe what analysis you conducted to arrive at your answer, and provide quantitative evidence supporting your answer.
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/activities/data/'
+source(paste(url, 'projection-functions.R', sep = ''))
 
-### Neural net
+#setwd("C:/Users/luliu/OneDrive/Desktop/PSTAT197A/M2/module2-f23-module2-group4")
+load("../data/claims-raw.RData")
+```
 
-Summarize the neural network model you trained by desribing:
+## HTML scraping
 
--   architecture
+In this section, we explore if including header content improves model predictions. In order to do this, We must compare results for claims with headers as well as claimes without headers.
 
--   optimization and loss
+### Without Headers
 
--   training epochs
+We first define functions that will be used to parse the html and clean our text.
 
--   predictive accuracy
+```{r}
+# function to parse html and clean text
+parse_fn <- function(.html){
+  read_html(.html) %>%
+    html_elements('p') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+
+# function to apply to claims data
+parse_data <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+
+nlp_fn <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'words',
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+```
+
+#### Data Cleaning
+
+```{r}
+claims_clean <- claims_raw %>%
+  parse_data()
+
+claims <- claims_clean %>%
+  nlp_fn()
+```
+
+
+#### Splitting the data
+
+```{r}
+set.seed(102722)
+partitions <- claims %>% initial_split(prop = 0.8)
+
+test_dtm <- testing(partitions) %>%
+  select(-.id, -bclass)
+test_labels <- testing(partitions) %>%
+  select(.id, bclass)
+
+train_dtm <- training(partitions) %>%
+  select(-.id, -bclass)
+train_labels <- training(partitions) %>%
+  select(.id, bclass)
+
+proj_out <- projection_fn(.dtm = train_dtm, .prop = 0.7)
+train_dtm_projected <- proj_out$data
+
+# number of components used
+proj_out$n_pc
+```
+
+#### Projection
+
+```{r}
+train <- train_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(train_dtm_projected)
+
+x_train <- train %>% select(-bclass) %>% as.matrix()
+y_train <- train_labels %>% pull(bclass)
+```
+
+
+#### Logistic Regression
+
+Now that we have completed the preprocessing of our data, we can fit the data to a logistic regression model and generate predictions.
+
+#### Storing predictors and response
+
+```{r}
+alpha_enet <- 0.3
+
+fit_reg <- glmnet(x = x_train, 
+                 y = y_train, 
+                 family = 'binomial',
+                 alpha = alpha_enet)
+
+set.seed(102722)
+cvout <- cv.glmnet(x = x_train, 
+                   y = y_train, 
+                   family = 'binomial',
+                   alpha = alpha_enet)
+
+lambda_opt <- cvout$lambda.min
+
+cvout
+```
+
+#### Prediction
+
+```{r}
+# project test data onto PCs
+test_dtm_projected <- reproject_fn(.dtm = test_dtm, proj_out)
+
+# coerce to matrix
+x_test <- as.matrix(test_dtm_projected)
+
+# compute predicted probabilities
+preds <- predict(fit_reg, 
+                 s = lambda_opt, 
+                 newx = x_test,
+                 type = 'response')
+
+# store predictions in a data frame with true labels
+pred_df <- test_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, 
+                              labels = levels(bclass)))
+
+# define classification metric panel 
+panel <- metric_set(sensitivity, 
+                    specificity, 
+                    accuracy, 
+                    roc_auc)
+
+# compute test set accuracy
+pred_df %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second') %>% knitr::kable()
+```
+
+Displayed above are the results of exclusing header information and then applying logistic principal component regression. We see that our model without accounting for header content acheived an accuracy of 0.795, an roc_auc of 0.857, a sensitivity of 0.838, and specificity of 0.740. This means that approximately 79.5% of the predictions were correct and the model performed relatively well in terms of the trade-off between true positive rate and false positive rate. A sensitivity of 0.838 means that about 83.8% of actual positive instances were correctly identified by the model, and a specificity of 0.740 indicates that approximately 74% of actual negative instances were correctly identified as negative by the model.
+
+Now, we augment the HTML scraping strategy so that header information is captured in addition to paragraph content.
+
+### With Headers
+
+#### Re-defining parsing functions
+
+```{r}
+parse_fn_1 <- function(.html){
+  read_html(.html) %>%
+    html_elements('p, h1, h2, h3, h4, h5, h6') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+
+parse_data_1 <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn_1(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+
+nlp_fn_1 <- function(parse_data_1.out){
+  out <- parse_data_1.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean,  # Use the parsed paragraphs + headers
+                  token = 'words',
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+```
+
+#### Data cleaning
+
+```{r}
+#load('data/claims-raw.RData')
+
+claims_clean_1 <- claims_raw %>%
+  parse_data_1()
+
+claims_df <- claims_clean_1 %>%
+  nlp_fn_1()
+```
+
+#### Splitting the data
+
+```{r}
+set.seed(102722)
+partitions_1 <- claims_df %>% initial_split(prop = 0.8)
+
+test_dtm_1 <- testing(partitions_1) %>%
+  select(-.id, -bclass)
+test_labels_1 <- testing(partitions_1) %>%
+  select(.id, bclass)
+
+train_dtm_1 <- training(partitions_1) %>%
+  select(-.id, -bclass)
+train_labels_1 <- training(partitions_1) %>%
+  select(.id, bclass)
+```
+
+#### Projection
+
+```{r}
+proj_out_1 <- projection_fn(.dtm = train_dtm_1, .prop = 0.7)
+train_dtm_projected_1 <- proj_out_1$data
+
+# number of components used
+proj_out_1$n_pc
+```
+
+#### Fitting Logistic Regression With Headers
+
+```{r}
+train_1 <- train_labels_1 %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(train_dtm_projected_1)
+
+x_train_1 <- train_1 %>% select(-bclass) %>% as.matrix()
+y_train_1 <- train_labels_1 %>% pull(bclass)
+
+alpha_enet <- 0.3
+fit_reg_hdrs <- glmnet(x = x_train_1, 
+                 y = y_train_1, 
+                 family = 'binomial',
+                 alpha = alpha_enet)
+
+
+set.seed(102722)
+cvout_1 <- cv.glmnet(x = x_train_1, 
+                   y = y_train_1, 
+                   family = 'binomial',
+                   alpha = alpha_enet)
+
+lambda_opt_1 <- cvout_1$lambda.min
+
+cvout_1
+```
+
+#### Predictions
+
+```{r}
+# project test data onto PCs
+test_dtm_projected_1 <- reproject_fn(.dtm = test_dtm_1, proj_out_1)
+
+# coerce to matrix
+x_test_1 <- as.matrix(test_dtm_projected_1)
+
+# compute predicted probabilities
+preds_hdrs <- predict(fit_reg_hdrs, 
+                 s = lambda_opt_1, 
+                 newx = x_test_1,
+                 type = 'response')
+
+# store predictions in a data frame with true labels
+pred_df_hdrs <- test_labels_1 %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds_hdrs)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, 
+                              labels = levels(bclass)))
+
+# define classification metric panel 
+panel <- metric_set(sensitivity, 
+                    specificity, 
+                    accuracy, 
+                    roc_auc)
+
+# compute test set accuracy
+pred_df_hdrs %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second') %>% knitr::kable()
+```
+Above, we see the results of our loistic principal component regression model when it is given header information in addition to paragraph content. We can notice that there is no significant difference between not using header information and not using header information. This implies that considering the header does not provide much additional conext to the model, as both results are relatively similar. 
+
+This makes sense, because by manually scanning through our data, we see that there are some entries in which header information is not relevent to paragraph content. 
+
+**Example 1**
+
+_Header:_ find the truth filter by location filter by arrest date search public records powered by personal info check clayton thomas arrest details clayton thomas arrest details arrest information
+
+_Paragraph Contents:_ name clayton thomas location memphis tennessee age years processing date booking charge an arrest does not mean that the individual has been convicted of the alleged violation individuals on this website are innocent until proven guilty by a court of law all information related to charges and arrest or booking is obtained through public domain and in accordance with the freedom of information act....
+
+- In this header, not all of the information in the header is relevant, although some pieces are still related. 
+
+**Example 2**
+
+_Header:_ family login
+
+_Paragraph Contents:_ national obituary search wayne slim straseske obituary click on the item you would like to print obituary guestbook all share this obituary resources arrangements made by koepsell murray funeral cremation services beaver dam n n crystal lake road beaver dam wi...
+
+- The header doesn't really seem to provide meaningful information to the contents of the paragraph. 
+
+Due to headers like these, where some are relevant and others are not, we can see why including header information does not affect our results significantly. 
+
+
+## Bigrams
+
+Next, we want to determine if bigrams capture additional information about the claims status of a page. To do this, we will perform a second tokenization of the data to obtain bigrams, fit a logistic principal component regression model to the word-tokenized data, and then input the predicted log-odds-ratios together with some number of principal components of the bigram-tokenized data to a second logistic regression model.
+
+### Data Preprocessing
+
+In order to preprocess our data, we define functions to parse through the HTML and clean our text.
+
+#### Defining Functions
+
+```{r}
+parse_fn <- function(.html){
+  read_html(.html) %>%
+    html_elements('p') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+
+parse_data <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+
+nlp_fn <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'ngrams',
+                  n = 2,
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+```
+In the nlp_fn function, we use n=2 in unnest_tokens() in order to tokenize the text data into bigrams, as opposed to unigrams.
+
+#### Data Cleaning
+
+```{r}
+claims_clean <- claims_raw %>%
+  parse_data()
+
+claims <- claims_clean %>%
+  nlp_fn()
+```
+
+#### Splitting the data
+
+
+```{r}
+set.seed(102722)
+partitions <- claims %>% initial_split(prop = 0.8)
+
+test_dtm <- testing(partitions) %>%
+  select(-.id, -bclass)
+test_labels <- testing(partitions) %>%
+  select(.id, bclass)
+
+train_dtm <- training(partitions) %>%
+  select(-.id, -bclass)
+train_labels <- training(partitions) %>%
+  select(.id, bclass)
+```
+
+
+#### Principal Component Analysis
+
+```{r}
+proj_out <- projection_fn(.dtm = train_dtm, .prop = 0.7)
+train_dtm_projected <- proj_out$data
+
+proj_out$n_pc
+```
+
+### First Regression Model
+
+#### Create dataframe
+
+```{r}
+train <- train_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(train_dtm_projected)
+
+x_train <- train %>% select(-bclass) %>% as.matrix()
+y_train <- train_labels %>% pull(bclass)
+```
+
+
+#### Fitting the model
+
+```{r}
+alpha_enet <- 0.3
+fit_reg <- glmnet(x = x_train, 
+                 y = y_train, 
+                 family = 'binomial',
+                 alpha = alpha_enet)
+
+
+set.seed(102722)
+cvout <- cv.glmnet(x = x_train, 
+                   y = y_train, 
+                   family = 'binomial',
+                   alpha = alpha_enet)
+
+lambda_opt <- cvout$lambda.min
+
+cvout
+```
+
+#### Testing
+
+```{r}
+test_dtm_projected <- reproject_fn(.dtm = test_dtm, proj_out)
+
+# coerce to matrix
+x_test <- as.matrix(test_dtm_projected)
+
+# compute predicted probabilities
+preds <- predict(fit_reg, 
+                 s = lambda_opt, 
+                 newx = x_test,
+                 type = 'response')
+
+
+pred_df1 <- test_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, 
+                              labels = levels(bclass)))
+
+# define classification metric panel 
+panel <- metric_set(sensitivity, 
+                    specificity, 
+                    accuracy, 
+                    roc_auc)
+
+# compute test set accuracy
+pred_df1 %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second') %>% knitr::kable()
+```
+By using bigrams in fitting our data to a logistic principal component regression model, we achieve relatively mediocre results, with the metrics listed above. The sensitivity being 0.978 and specificity being 0.06 implies that the model is heavily biased towards classifying instances as positive, even when they are not. This is what results in a high true positive rate as well as a low true negative rate, resulting in the low accuracy of 0.591.
+
+Now, we input the predicted log-odds-ratios together with some number of principal components of the bigram-tokenized data to a second logistic regression model.
+
+### Second Regression Model
+
+#### Predict the log-odds for training data
+
+```{r}
+set.seed(102722)
+logodds_train <- predict(fit_reg, s = lambda_opt, newx = x_train, type = "link")
+
+train2 <- train
+train2$odds <- logodds_train
+```
+
+#### Select the number of components for PCA
+
+```{r}
+set.seed(102722)
+all_columns <- seq_len(98)
+selected_columns <- sample(all_columns[2:97], size = 50)
+selected_columns <- c(selected_columns, 98)
+
+x_train2 <- train2[, selected_columns, drop = FALSE] %>% as.matrix()
+y_train2 <- train_labels %>% pull(bclass)
+```
+
+
+#### Predict the log-odds for testing data
+
+```{r}
+set.seed(102722)
+logodds_test <- predict(fit_reg, s = lambda_opt, newx = x_test, type = "link")
+
+test_dtm_projected2 <- test_dtm_projected
+test_dtm_projected2$odds <- logodds_test
+test_dtm_projected2 <- test_dtm_projected2[, selected_columns-1, drop = FALSE]
+
+new_xtest <- as.matrix(test_dtm_projected2)
+```
+
+
+#### Fitting the model
+
+```{r}
+set.seed(102722)
+alpha_enet <- 0.3
+fit_reg2 <- glmnet(x = x_train2, 
+                  y = y_train2, 
+                  family = 'binomial',
+                  alpha = alpha_enet)
+
+
+cvout2 <- cv.glmnet(x = x_train2, 
+                   y = y_train2, 
+                   family = 'binomial',
+                   alpha = alpha_enet)
+
+lambda_opt2 <- cvout2$lambda.min
+
+cvout2
+
+
+```
+
+#### Testing
+
+```{r}
+set.seed(102722)
+preds2 <- predict(fit_reg2, 
+                 s = lambda_opt, 
+                 newx = new_xtest,
+                 type = 'response')
+
+
+pred_df2 <- test_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds2)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, 
+                              labels = levels(bclass)))
+
+# define classification metric panel 
+panel2 <- metric_set(sensitivity, 
+                    specificity, 
+                    accuracy, 
+                    roc_auc)
+
+# compute test set accuracy
+pred_df2 %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second') %>% knitr::kable()
+
+```
+
+Here, we can see that the above results of the second model, with the log-odds, are significant better than the results of the first model, which ncorporated bigrams. The accuracy raised from 0.591 from the first model to 0.708 from the seond model. We also observe that the sensitivity decreased from 0.978 to 0.610, while the specificity raised significantly from 0.06 to 0.843. This shows that, instead of classifying the majority of entries as positive, like the first model did, the second model has better classification capabilities. With these numbers, we see that log-odds largely improve model performance.
+
+Now, we can compare each of these models to our previous, unigram model (without header information). 
+
+Unigram Without Header:
+```{r, echo=FALSE}
+pred_df %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second') %>% knitr::kable()
+```
+
+Bigram Without Log-Odds:
+```{r, echo=FALSE}
+pred_df1 %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second') %>% knitr::kable()
+```
+
+Bigram With Log-Odds:
+```{r, echo=FALSE}
+pred_df2 %>% panel(truth = bclass, 
+                  estimate = bclass.pred, 
+                  pred, 
+                  event_level = 'second') %>% knitr::kable()
+```
+
+When we compare unigram and bigram performance, we can see that our bigram model performed worse, with the overall accuracy dropping from 0.795 to 0.591. Therefore, using bigrams is not advantageous when it comes to the classification of our data, and it does not provide more useful information about the text. 
+
+When we use bigrams in combination with log-odds, we acheive an accuracy of 0.708 and other results that are fairly comparable to our unigram results. However, they do seem to fall a little bit short of our unigram results, even though adding log-odds heavily improve classification accuracy of bigrams.
+
+## Neural Net
+
+Next, we want to experiment with our own neural networks to acheive a model that is comparable to the principal component logistic regression from task 1.
+
+### Data Preprocessing
+
+#### Defining Functions
+```{r}
+parse_fn_1 <- function(.html){
+  read_html(.html) %>%
+    html_elements('p, h1, h2, h3, h4, h5, h6') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+
+parse_data_1 <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn_1(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+```
+
+#### Data Cleaning
+```{r}
+claims_clean <- parse_data_1(claims_raw)
+head(claims_clean)
+```
+
+#### Splitting Our Data
+```{r}
+set.seed(110122)
+partitions <- claims_clean %>%
+  initial_split(prop = 0.8)
+
+train_text <- training(partitions) %>%
+  pull(text_clean)
+train_labels <- training(partitions) %>%
+  pull(bclass) %>%
+  as.numeric() - 1
+```
+
+### Example Model
+
+We will use the example neural net provided to us as a basis of our experimentation.
+
+```{r}
+preprocess_layer <- layer_text_vectorization(
+  standardize = NULL,
+  split = 'whitespace',
+  ngrams = NULL,
+  max_tokens = NULL,
+  output_mode = 'tf_idf'
+)
+
+preprocess_layer %>% adapt(train_text)
+
+# define NN architecture
+model <- keras_model_sequential() %>%
+  preprocess_layer() %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25) %>%
+  layer_dropout(0.2) %>%
+  layer_dense(1) %>%
+  layer_activation(activation = 'sigmoid')
+
+summary(model)
+
+# configure for training
+model %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer = 'adam',
+  metrics = 'binary_accuracy'
+)
+
+# train
+history <- model %>%
+  fit(train_text, 
+      train_labels,
+      validation_split = 0.3,
+      epochs = 5)
+```
+
+```{r}
+test_text <- testing(partitions) %>%
+  pull(text_clean)
+test_labels <- testing(partitions) %>%
+  pull(bclass) %>%
+  as.numeric() - 1
+
+
+model %>% evaluate(test_text, test_labels)
+```
+
+In this example neural network, the loss decreases from 1.2608 to 0.2956 with 5 epoches, and the binary_accuracy increases from 0.7062 to 0.9624. The testing accuracy is  0.7664, which is lower than our testing accuracy in task 1 (both for with headers and without headers).
+
+Now, we modify the model in order to acheive results that exceed those in task 1.
+
+### Modified Model
+
+```{r}
+preprocess_layer <- layer_text_vectorization(
+  standardize = NULL,
+  split = 'whitespace',
+  ngrams = NULL,
+  max_tokens = NULL,
+  output_mode = 'tf_idf'
+)
+
+preprocess_layer %>% adapt(train_text)
+
+# define NN architecture
+model2 <- keras_model_sequential() %>%
+  preprocess_layer() %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25) %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(units = 25, activation = 'relu') %>%
+  layer_dropout(0.2) %>%
+  layer_dense(1) %>%
+  layer_activation(activation = 'sigmoid')
+
+summary(model2)
+
+# configure for training
+model2 %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer = 'adam',
+  metrics = 'binary_accuracy'
+)
+
+# train
+history <- model2 %>%
+  fit(train_text, 
+      train_labels,
+      validation_split = 0.3,
+      epochs = 15)
+```
+
+```{r}
+test_text <- testing(partitions) %>%
+  pull(text_clean)
+test_labels <- testing(partitions) %>%
+  pull(bclass) %>%
+  as.numeric() - 1
+
+
+model2 %>% evaluate(test_text, test_labels)
+```
+
+
+```{r}
+save_model_tf(model2, "modified-model")
+```
+
+In this new model, we add two more hidden layers with 25 neurons and a dropout score of 0.2. We also increase the number of epochs to 15, as when the number of epochs is larger than 15, we find that the loss fails to converge. We can see that the loss decreases with 15 epochs, from 0.8567 to 0.0968, binary_accuracy also increases from 0.6344 to 0.9708. The testing accuracy of this modified model is 0.8154, which is better than the accuracy of the models in task 1 of our preliminary tasks.
+
