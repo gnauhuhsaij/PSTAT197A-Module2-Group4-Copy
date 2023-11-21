@@ -187,18 +187,6 @@ pred_classes_multi <- factor(max.col(preds_multi), labels = class_labels_multi)
 ```
 
 
-```{r}
-# Tokenize and pad sequences for RNN
-```
-
-```{r}
-# Define RNN architecture for binary classification
-
-
-# Train the binary RNN model
-```
-
-
 ## Export Predictions
 
 ```{r}
