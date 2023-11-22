@@ -89,6 +89,8 @@ history_binary <- binary_model %>%
       validation_split = 0.3,
       epochs = 10)
 
+plot(history_binary)
+
 # Save binary model
 save_model_tf(binary_model, "results/binary_model")
 
@@ -100,16 +102,13 @@ preds_binary <- predict(binary_model, test_text) %>%
   as.numeric()
 
 # Predictions for binary model
-preds_binary1 <- predict(binary_model, clean_df$text_clean) %>%
-  as.numeric()
+# preds_binary1 <- predict(binary_model, clean_df$text_clean) %>%
+#    as.numeric()
 
 # Convert to binary labels
 class_labels_binary <- claims_raw %>% pull(bclass) %>% levels()
 pred_classes_binary <- factor(preds_binary > 0.5, labels = class_labels_binary)
 # pred_classes_binary
-
-pred_classes_binary1 <- factor(preds_binary1 > 0.5, labels = class_labels_binary)
-# pred_classes_binary1
 
 
 ## Multi-Class Classification Model
@@ -149,6 +148,8 @@ history_multi <- multi_model %>%
       validation_split = 0.3,
       epochs = 10)
 
+plot(history_multi)
+
 # Save multi-class model
 save_model_tf(multi_model, "results/multi_model")
 
@@ -159,14 +160,10 @@ save_model_tf(multi_model, "results/multi_model")
 preds_multi <- predict(multi_model, test_text)
 
 # Predictions for multi-class model
-preds_multi1 <- predict(multi_model, clean_df$text_clean)
-
+# preds_multi <- predict(multi_model, clean_df$text_clean)
 class_labels_multi <- claims_raw %>% pull(mclass) %>% levels()
 pred_classes_multi <- factor(max.col(preds_multi), labels = class_labels_multi)
 # pred_classes_multi
-
-pred_classes_multi1 <- factor(max.col(preds_multi1), labels = class_labels_multi)
-# pred_classes_multi1
 
 
 ## Export Predictions
@@ -180,16 +177,6 @@ pred_df_binary <- testing(partitions) %>%
 
 save(pred_df_binary, file = 'results/binary_preds.RData')
 
-# Create and save binary predictions (for clean_test)
-pred_df_binary1 <- clean_df %>%
-  bind_cols(bclass.pred = pred_classes_binary1) %>%
-  select(.id, bclass.pred)
-
-# pred_df_binary1
-
-save(pred_df_binary1, file = 'results/binary_preds1.RData')
-
-
 # Create and save multi-class predictions
 pred_df_multi <- testing(partitions) %>%
   bind_cols(mclass.pred = pred_classes_multi) %>%
@@ -199,18 +186,11 @@ pred_df_multi <- testing(partitions) %>%
 
 save(pred_df_multi, file = 'results/multi_preds.RData')
 
-pred_df_multi1 <- clean_df %>%
-  bind_cols(mclass.pred = pred_classes_multi1) %>%
-  select(.id, mclass.pred)
+# merge the 2 dataframe
 
-# pred_df_multi1
+merged_pred <- left_join(pred_df_binary, pred_df_multi, by = ".id")
 
-save(pred_df_multi1, file = 'results/multi_preds1.RData')
+merged_pred
 
-
-merged_pred1 <- left_join(pred_df_binary1, pred_df_multi1, by = ".id")
-
-merged_pred1 # Use this!!! because this is the prediction of `claims-test.RData`
-
-save(merged_pred1, file = 'results/merged_pred.RData')
+save(merged_pred, file = 'results/merged_pred.RData')
 
