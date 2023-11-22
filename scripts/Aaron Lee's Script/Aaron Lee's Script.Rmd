@@ -110,6 +110,8 @@ history_binary <- binary_model %>%
       validation_split = 0.3,
       epochs = 10)
 
+plot(history_binary)
+
 # Save binary model
 save_model_tf(binary_model, "results/binary_model")
 
@@ -132,6 +134,8 @@ pred_classes_binary <- factor(preds_binary > 0.5, labels = class_labels_binary)
 pred_classes_binary1 <- factor(preds_binary1 > 0.5, labels = class_labels_binary)
 # pred_classes_binary1
 ```
+
+* Through the plot above, we could see that the accuracy of validation data of Binary Classification Model is approximately 0.83.
 
 ## Multi-Class Classification Model
 
@@ -171,6 +175,8 @@ history_multi <- multi_model %>%
       validation_split = 0.3,
       epochs = 10)
 
+plot(history_multi)
+
 # Save multi-class model
 save_model_tf(multi_model, "results/multi_model")
 
@@ -191,6 +197,7 @@ pred_classes_multi1 <- factor(max.col(preds_multi1), labels = class_labels_multi
 # pred_classes_multi1
 ```
 
+* Through the plot above, we could see that the accuracy of validation data of the Multi-Class Classification Model is approximately 0.8.
 
 ## Export Predictions
 
@@ -229,5 +236,7 @@ merged_pred1 <- left_join(pred_df_binary1, pred_df_multi1, by = ".id")
 merged_pred1 # Use this!!! because this is the prediction of `claims-test.RData`
 
 save(merged_pred1, file = 'results/merged_pred1.RData')
+
 ```
+
 
