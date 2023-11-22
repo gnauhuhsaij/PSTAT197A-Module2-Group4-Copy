@@ -89,6 +89,8 @@ history_binary <- binary_model %>%
       validation_split = 0.3,
       epochs = 10)
 
+plot(history_binary)
+
 # Save binary model
 save_model_tf(binary_model, "results/binary_model")
 
@@ -145,6 +147,8 @@ history_multi <- multi_model %>%
       train_labels_multi,
       validation_split = 0.3,
       epochs = 10)
+
+plot(history_multi)
 
 # Save multi-class model
 save_model_tf(multi_model, "results/multi_model")
