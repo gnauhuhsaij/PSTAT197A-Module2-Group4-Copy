@@ -735,7 +735,7 @@ train_labels <- training(partitions) %>%
 
 We will use the example neural net provided to us as a basis of our experimentation.
 
-```{r}
+```{r, eval = FALSE}
 preprocess_layer <- layer_text_vectorization(
   standardize = NULL,
   split = 'whitespace',
@@ -772,7 +772,7 @@ history <- model %>%
       epochs = 5)
 ```
 
-```{r}
+```{r, eval=FALSE}
 test_text <- testing(partitions) %>%
   pull(text_clean)
 test_labels <- testing(partitions) %>%
@@ -789,7 +789,7 @@ Now, we modify the model in order to acheive results that exceed those in task 1
 
 ### Modified Model
 
-```{r}
+```{r, eval=FALSE}
 preprocess_layer <- layer_text_vectorization(
   standardize = NULL,
   split = 'whitespace',
@@ -830,7 +830,7 @@ history <- model2 %>%
       epochs = 15)
 ```
 
-```{r}
+```{r, eval=FALSE}
 test_text <- testing(partitions) %>%
   pull(text_clean)
 test_labels <- testing(partitions) %>%
@@ -842,7 +842,7 @@ model2 %>% evaluate(test_text, test_labels)
 ```
 
 
-```{r}
+```{r, eval=FALSE}
 save_model_tf(model2, "modified-model")
 ```
 
